@@ -1,0 +1,34 @@
+#
+# ngx_http_waf_module 的编译配置文件
+#
+# [文件作用]
+#   - 告诉 Nginx 的 configure 脚本如何编译我们的 WAF 模块。
+#   - 定义了模块需要链接哪些外部库 (如 PCRE)，以及模块的源代码文件在哪里。
+#
+# [如何使用]
+#   在编译 Nginx 时，使用 --add-module=/path/to/this/module/directory 参数来指定
+#   本模块的路径。例如:
+#   
+#   cd /path/to/nginx-source/
+#   ./configure --add-module=/home/user/ngx_http_access_rule_waf_module
+#   make && make install
+#
+
+# 模块名称，--add-module=... 时会用到
+ngx_addon_name=ngx_http_waf_module
+
+# 将本模块添加到 HTTP 模块列表
+HTTP_MODULES="$HTTP_MODULES ngx_http_waf_module"
+
+# 列出所有需要被编译的源文件
+NGX_ADDON_SRCS="$NGX_ADDON_SRCS $ngx_addon_dir/ngx_http_waf_module.c"
+NGX_ADDON_SRCS="$NGX_ADDON_SRCS $ngx_addon_dir/waf_parser.c"
+NGX_ADDON_SRCS="$NGX_ADDON_SRCS $ngx_addon_dir/waf_request.c"
+NGX_ADDON_SRCS="$NGX_ADDON_SRCS $ngx_addon_dir/waf_transform.c"
+NGX_ADDON_SRCS="$NGX_ADDON_SRCS $ngx_addon_dir/waf_action.c"
+NGX_ADDON_SRCS="$NGX_ADDON_SRCS $ngx_addon_dir/waf_rule_engine.c"
+NGX_ADDON_SRCS="$NGX_ADDON_SRCS $ngx_addon_dir/waf_log.c"
+
+# 声明模块依赖 PCRE 库 (用于正则表达式)
+CORE_DEPS="$CORE_DEPS $PCRE_DEPS"
+CORE_LIBS="$CORE_LIBS $PCRE_LIB" 
