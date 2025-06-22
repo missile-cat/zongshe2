@@ -24,6 +24,12 @@
  *    - waf_exec_rules() -> waf_exec_operator()
  * =====================================================================================
  */
+ 
+ extern ngx_int_t waf_exec_transformations(ngx_pool_t *pool,
+                                          const ngx_str_t *input,
+                                          ngx_uint_t trans_mask,
+                                          ngx_str_t *output);
+
 
 // --- 本地函数前置声明 ---
 static ngx_int_t waf_exec_operator(waf_rule_t *rule, const ngx_str_t *input);
@@ -64,7 +70,7 @@ waf_rule_t *waf_exec_rules(ngx_http_request_t *r) {
             continue; // 获取失败，跳过此规则
         }
         if (rc == NGX_AGAIN) {
-            return NGX_AGAIN; // 需要等待，向上返回
+            return NULL; // 需要等待，向上返回
         }
         
         // --- 步骤 2: 执行转换 ---
