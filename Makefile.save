@@ -1,0 +1,46 @@
+# -----------------------------------------------------------------------------
+# Makefile for building ngx_http_waf_module as a dynamic nginx module
+# -----------------------------------------------------------------------------
+
+# 如果你的 nginx 源码头文件不在系统默认路径，请在下面指定：
+# NGINX_INC := /path/to/nginx/src/core
+# 否则直接留空，让 nginx -V 自动带入 --with-cc-opt
+NGINX_INC ?=
+
+# 编译器
+CC := gcc
+
+# 从 nginx -V 中提取 --with-cc-opt （包含 -I、-D 等）
+NGX_CC_OPT := \$\(shell nginx -V 2>&1 | sed -n "s/.*--with-cc-opt='\([^']*\)'.*/\1/p"\)
+
+# 打开位置无关代码，优化等级 O2，并加上 nginx 的 CC_OPT
+CFLAGS := -fPIC -O2 \$(NGX_CC_OPT) \$(if \$(NGINX_INC),-I\$(NGINX_INC),)
+
+# 链接成动态库
+LDFLAGS := -shared
+
+# 源文件列表，自动拾取所有 .c
+SRCS := \$(wildcard *.c)
+
+# 目标 .o
+OBJS := \$(SRCS:.c=.o)
+
+# 输出的动态模块名
+TARGET := ngx_http_waf_module.so
+
+.PHONY: all clean
+
+all: \$(TARGET)
+
+# 单文件编译规则
+%.o: %.c
+	\$(CC) \$(CFLAGS) -c \$< -o \$@
+
+# 链接所有 .o
+\$(TARGET): \$(OBJS)
+	\$(CC) \$(LDFLAGS) -o \$@ \$^
+
+clean:
+	rm -f \$(OBJS) \$(TARGET)
+
+
