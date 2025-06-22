@@ -26,7 +26,13 @@
  *        - ngx_http_waf_handler() -> waf_action.c::waf_exec_actions()
  * =====================================================================================
  */
+#include <ngx_config.h>
+#include <ngx_core.h>
+#include <ngx_http.h>
 #include "waf_common.h"
+#include "waf_blacklist.h"
+#include "waf_whitelist.h"
+#include "waf_url_whitelist.h"
 
 // 配置相关函数
 static char *ngx_http_waf_set_rule(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
@@ -37,6 +43,7 @@ static ngx_int_t ngx_http_waf_handler(ngx_http_request_t *r);
 static void *ngx_http_waf_create_main_conf(ngx_conf_t *cf);
 static char *ngx_http_waf_shm_size(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
 static ngx_int_t ngx_http_waf_init_shm_zone(ngx_shm_zone_t *shm_zone, void *data);
+static ngx_int_t ngx_http_waf_pre_init(ngx_conf_t *cf);
 
 /**
  * @brief 定义本模块的配置文件指令。
@@ -96,8 +103,10 @@ static ngx_command_t ngx_http_waf_commands[] = {
     },
     {
         ngx_string("SecRule"),
-        // 作用域: main, srv, loc; 类型: 带1个参数
-        NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF | NGX_CONF_TAKE1,
+        // [BUG修复] 原来的 NGX_CONF_TAKE1 是错误的，它限制指令只能带一个参数。
+        // 而处理函数实际需要3或4个参数。改为 NGX_CONF_1MORE，允许指令携带多个参数，
+        // 具体的参数数量检查交由指令的回调函数 ngx_http_waf_set_rule 进行。
+        NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF | NGX_CONF_1MORE,
         ngx_http_waf_set_rule, // 使用我们自定义的回调函数来解析规则
         NGX_HTTP_LOC_CONF_OFFSET,
         0,
@@ -118,7 +127,7 @@ static ngx_command_t ngx_http_waf_commands[] = {
  * 这个结构体将我们的回调函数"注册"到 Nginx 的不同阶段。
  */
 static ngx_http_module_t ngx_http_waf_module_ctx = {
-    NULL,                          /* preconfiguration */
+    ngx_http_waf_pre_init,         /* preconfiguration */
     ngx_http_waf_init,             /* postconfiguration */
     ngx_http_waf_create_main_conf, /* create main configuration */
     NULL,                          /* init main configuration */
@@ -156,50 +165,52 @@ ngx_module_t ngx_http_waf_module = {
 static ngx_int_t ngx_http_waf_handler(ngx_http_request_t *r) {
     waf_loc_conf_t *lcf;
     waf_rule_t *matched_rule;
-    ngx_int_t res;
+
+    ngx_log_error(NGX_LOG_WARN, r->connection->log, 0, "[WAF] === WAF Handler Started ===");
 
     // --- 0. 黑名单检查 ---
-    // 这是最高优先级的检查，如果IP在黑名单中，立即拒绝。
+    ngx_log_error(NGX_LOG_WARN, r->connection->log, 0, "[WAF] Step 1: Checking IP Blacklist.");
     if (waf_blacklist_check_ip(r) == NGX_OK) {
+        ngx_log_error(NGX_LOG_WARN, r->connection->log, 0, "[WAF] Result: IP Blacklisted. Denying access.");
         return NGX_HTTP_FORBIDDEN;
     }
+    ngx_log_error(NGX_LOG_WARN, r->connection->log, 0, "[WAF] Pass: IP not in Blacklist.");
 
     // 获取当前 location 的配置
     lcf = ngx_http_get_module_loc_conf(r, ngx_http_waf_module);
     
     // --- 1. WAF 总开关检查 & 白名单检查 ---
-    if (!lcf->enable) {
-        return NGX_DECLINED; // WAF 关闭，直接放行
+    ngx_log_error(NGX_LOG_WARN, r->connection->log, 0, "[WAF] Step 2: Checking if WAF is enabled (lcf->enable: %d).", lcf->enable);
+    if (lcf->enable == 0) {
+        ngx_log_error(NGX_LOG_WARN, r->connection->log, 0, "[WAF] Result: WAF is disabled. Skipping.");
+        return NGX_DECLINED;
     }
 
+    ngx_log_error(NGX_LOG_WARN, r->connection->log, 0, "[WAF] Step 3: Checking IP Whitelist.");
     if (waf_check_whitelist(r) == NGX_OK) {
-        return NGX_DECLINED; // IP 在白名单内，直接放行
+        ngx_log_error(NGX_LOG_WARN, r->connection->log, 0, "[WAF] Result: IP Whitelisted. Access granted.");
+        return NGX_DECLINED;
     }
+    ngx_log_error(NGX_LOG_WARN, r->connection->log, 0, "[WAF] Pass: IP not in Whitelist.");
 
+    ngx_log_error(NGX_LOG_WARN, r->connection->log, 0, "[WAF] Step 4: Checking URL Whitelist.");
     if (waf_check_url_whitelist(r) == NGX_OK) {
-        return NGX_DECLINED; // URL 在白名单内，直接放行
+        ngx_log_error(NGX_LOG_WARN, r->connection->log, 0, "[WAF] Result: URL Whitelisted. Access granted.");
+        return NGX_DECLINED;
     }
+    ngx_log_error(NGX_LOG_WARN, r->connection->log, 0, "[WAF] Pass: URL not in Whitelist.");
 
-    ngx_log_debug0(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "waf: start processing a new request");
-
-    // 调用规则引擎执行所有规则
+    // --- 2. 规则引擎处理 ---
+    ngx_log_error(NGX_LOG_WARN, r->connection->log, 0, "[WAF] Step 5: Executing Rule Engine.");
     matched_rule = waf_exec_rules(r);
-
-    // 如果有规则匹配成功
-    if (matched_rule != NULL) {
-        // 调用动作执行器来处理命中的规则
-        return waf_exec_actions(r, matched_rule);
+    if (matched_rule == NULL) {
+        ngx_log_error(NGX_LOG_WARN, r->connection->log, 0, "[WAF] Result: No rules matched. Access granted.");
+        return NGX_DECLINED;
     }
 
-    res = waf_rule_engine(r);
-    if (res == NGX_HTTP_FORBIDDEN) {
-        return NGX_HTTP_FORBIDDEN;
-    }
-    if (res == NGX_AGAIN) {
-        return NGX_DONE; // 告诉Nginx我们正在等待，处理将稍后继续
-    }
-
-    return NGX_DECLINED;
+    // --- 3. 执行动作 ---
+    ngx_log_error(NGX_LOG_WARN, r->connection->log, 0, "[WAF] Step 6: Rule matched (id: %d). Executing action.", matched_rule->id);
+    return waf_exec_actions(r, matched_rule);
 }
 
 /**
@@ -305,21 +316,26 @@ static char *ngx_http_waf_merge_loc_conf(ngx_conf_t *cf, void *parent, void *chi
 }
 
 /**
- * @brief [回调] Nginx 完成所有配置解析后调用的初始化函数。
+ * @brief [回调] Nginx 完成配置解析后的初始化函数。
+ *
+ * 在此函数中，我们将 WAF 的处理函数 (`ngx_http_waf_handler`) 挂接到 Nginx
+ * 的请求处理流程 (REWRITE 阶段)。这是模块能够工作的关键。
  */
 static ngx_int_t ngx_http_waf_init(ngx_conf_t *cf) {
-    ngx_http_handler_pt *h;
-    ngx_http_core_main_conf_t *cmcf;
+    ngx_http_handler_pt        *h;
+    ngx_http_core_main_conf_t  *cmcf;
+
+    ngx_log_error(NGX_LOG_WARN, cf->log, 0, "[WAF INIT] Post-configuration hook started.");
 
     cmcf = ngx_http_conf_get_module_main_conf(cf, ngx_http_core_module);
 
-    // 将我们的核心处理函数 `ngx_http_waf_handler` 添加到
-    // Nginx 请求处理流程的 `NGX_HTTP_REWRITE_PHASE` 阶段。
     h = ngx_array_push(&cmcf->phases[NGX_HTTP_REWRITE_PHASE].handlers);
     if (h == NULL) {
         return NGX_ERROR;
     }
+
     *h = ngx_http_waf_handler;
+    ngx_log_error(NGX_LOG_WARN, cf->log, 0, "[WAF INIT] Success: WAF handler installed in REWRITE phase.");
 
     return NGX_OK;
 }
@@ -377,4 +393,14 @@ static ngx_int_t ngx_http_waf_init_shm_zone(ngx_shm_zone_t *shm_zone, void *data
     // The 'data' parameter is the shm_zone->data from the old cycle.
     // Our waf_blacklist_init_shm function can handle this directly.
     return waf_blacklist_init_shm(shm_zone, data);
+}
+
+/**
+ * @brief [回调] Nginx 加载配置前的预初始化。
+ *
+ * 这个函数目前是空的，但它的存在有时可以解决一些模块初始化的时序问题。
+ */
+static ngx_int_t ngx_http_waf_pre_init(ngx_conf_t *cf) {
+    ngx_log_error(NGX_LOG_WARN, cf->log, 0, "[WAF PRE_INIT] Pre-configuration hook called.");
+    return NGX_OK;
 }

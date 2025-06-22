@@ -47,6 +47,8 @@ typedef struct {
 // 指向共享内存控制结构的全局指针，方便快速访问
 static waf_shm_data_t *g_shm_data = NULL;
 
+// static ngx_shm_zone_t *g_shm_zone = NULL;
+
 // --- 模块接口实现 ---
 
 /**
@@ -62,17 +64,15 @@ static waf_shm_data_t *g_shm_data = NULL;
  *       基于用户配置的 shm_size，共享内存到底能容纳多少个IP条目。
  */
 ngx_int_t waf_blacklist_init_shm(ngx_shm_zone_t *shm_zone, void *data) {
-    // `data` 是来自旧工作周期的 shm_zone->data。
-    // 如果它不为 NULL，说明我们正在进行 reload，内存已经初始化完毕。
-    if (data) {
-        // 共享内存已存在，直接复用。
-        g_shm_data = shm_zone->shm.addr;
-        return NGX_OK;
+    // 如果是第一次初始化，需要设置共享内存的锁
+    if (shm_zone->shm.exists) {
+        // 如果共享内存已存在，直接使用
+        g_shm_data = (waf_shm_data_t *)shm_zone->shm.addr;
+    } else {
+        // 否则，进行初始化
+        g_shm_data = (waf_shm_data_t *)shm_zone->shm.addr;
     }
 
-    // 首次初始化
-    g_shm_data = shm_zone->shm.addr;
-    
     // 确保共享内存大小至少能容纳控制结构本身
     if (shm_zone->shm.size < sizeof(waf_shm_data_t)) {
         ngx_log_error(NGX_LOG_EMERG, shm_zone->shm.log, 0, "[WAF] shm_size is too small");
@@ -100,14 +100,17 @@ ngx_int_t waf_blacklist_init_shm(ngx_shm_zone_t *shm_zone, void *data) {
 /**
  * @brief [核心] 检查客户端 IP 是否在黑名单中。
  * 
- * @param r Nginx 请求对象，用于获取客户端IP地址。
- * 
- * @return ngx_int_t 如果IP在黑名单中且未过期，返回 NGX_OK；否则返回 NGX_DECLINED。
- * 
- * @note 这是WAF的第一道防线。在处理任何规则之前，首先检查IP是否已被封禁。
- *       函数会遍历共享内存中的数组，查找匹配的IP并检查其 block_expires 时间。
+ * @param r Nginx 请求对象
+ * @return ngx_int_t 如果在黑名单中则返回 NGX_OK，否则返回 NGX_DECLINED。
  */
 ngx_int_t waf_blacklist_check_ip(ngx_http_request_t *r) {
+    waf_main_conf_t *mcf;
+
+    mcf = ngx_http_get_module_main_conf(r, ngx_http_waf_module);
+    if (mcf == NULL || mcf->shm_zone == NULL) {
+        return NGX_DECLINED;
+    }
+
     if (g_shm_data == NULL) return NGX_DECLINED;
 
     time_t now = ngx_time();

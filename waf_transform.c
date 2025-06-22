@@ -89,4 +89,8 @@ static void url_decode(ngx_pool_t *pool, ngx_str_t *str) {
     
     // 更新解码后字符串的长度
     str->len = dst - str->data;
+}
+
+void waf_transform_inplace(char *str) {
+    // ... existing code ...
 } 

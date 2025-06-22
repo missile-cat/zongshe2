@@ -27,10 +27,10 @@
  *      - waf_parse_rule:                      解析单条 SecRule 规则。
  *
  *    - waf_request.c:
- *      - waf_get_variable:                    从请求中提取变量值。
+ *      - waf_get_var:                         从请求中提取变量值。
  *
  *    - waf_transform.c:
- *      - waf_apply_transformations:           对提取出的值应用转换函数。
+ *      - waf_exec_transformations:            对提取出的值应用转换函数。
  *
  *    - waf_rule_engine.c:
  *      - waf_exec_rules:                      执行所有规则。
@@ -188,25 +188,29 @@ ngx_int_t waf_parse_rule(ngx_conf_t *cf, waf_rule_t *rule, ngx_str_t *trans_str,
  * @brief 从 ngx_http_request_t 中提取规则所需的变量值。
  * @param r      Nginx 请求对象。
  * @param var    需要提取的变量定义。
- * @param value  [输出参数] 用于存放提取到的值的 ngx_str_t 指针。
- * @return 成功找到返回 NGX_OK，未找到返回 NGX_DECLINED。
+ * @return 成功找到返回 NGX_OK，未找到返回 NGX_DECLINED, 需要等待返回 NGX_AGAIN。
  */
-ngx_int_t waf_get_variable(ngx_http_request_t *r, waf_variable_t *var, ngx_str_t *value);
+ngx_int_t waf_get_var(ngx_http_request_t *r, waf_variable_t *var);
 
 /**
  * @file waf_transform.c
  * @brief 对提取出的变量值应用转换函数。
- * @param pool   内存池，用于可能的新内存分配。
- * @param rule   当前规则，用于获取需要应用哪些转换。
- * @param value  [输入/输出] 指向待处理字符串的指针，函数会就地修改其内容。
+ * @param pool       内存池，用于可能的新内存分配。
+ * @param input      输入字符串。
+ * @param trans_mask 需要应用的转换函数位掩码。
+ * @param output     [输出参数] 存放转换结果的字符串。
+ * @return 始终返回 NGX_OK。
  */
-void waf_apply_transformations(ngx_pool_t *pool, waf_rule_t *rule, ngx_str_t *value);
+ngx_int_t waf_exec_transformations(ngx_pool_t *pool, const ngx_str_t *input, 
+                                   ngx_uint_t trans_mask, ngx_str_t *output);
 
 /**
  * @file waf_rule_engine.c
  * @brief 遍历并执行所有规则，返回第一条匹配的规则。
  * @param r Nginx 请求对象。
- * @return 如果有规则匹配，返回指向该 waf_rule_t 的指针；否则返回 NULL。
+ * @return 如果有规则匹配，返回指向该 waf_rule_t 的指针；
+ *         如果需要等待 request body，返回 (waf_rule_t *)NGX_AGAIN；
+ *         否则返回 NULL。
  */
 waf_rule_t* waf_exec_rules(ngx_http_request_t *r);
 
@@ -232,15 +236,6 @@ void waf_log_attack(ngx_http_request_t *r, waf_rule_t *rule);
 #include "waf_whitelist.h"
 #include "waf_blacklist.h"
 #include "waf_url_whitelist.h"
-
-ngx_int_t waf_action_exec(ngx_http_request_t* r, waf_rule_t *rule);
-ngx_int_t waf_get_var(ngx_http_request_t *r, waf_variable_t *var);
-ngx_int_t waf_transform(const ngx_str_t *in, ngx_str_t *out, ngx_uint_t t_type, ngx_pool_t *pool);
-
-ngx_int_t waf_rule_engine(ngx_http_request_t *r);
-
-ngx_int_t waf_url_whitelist_check(ngx_http_request_t *r);
-ngx_int_t waf_ip_whitelist_check(ngx_http_request_t *r);
 
 extern ngx_module_t ngx_http_waf_module;
 

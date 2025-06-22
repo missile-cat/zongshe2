@@ -70,25 +70,22 @@ char *waf_set_url_whitelist(ngx_conf_t *cf, ngx_command_t *cmd, void *conf) {
  */
 ngx_int_t waf_check_url_whitelist(ngx_http_request_t *r) {
     waf_loc_conf_t *lcf;
-    ngx_str_t *whitelist_urls;
-    ngx_uint_t i;
-
     lcf = ngx_http_get_module_loc_conf(r, ngx_http_waf_module);
-
-    // 如果没有配置白名单，则直接返回"不在白名单中"
-    if (lcf->url_whitelist == NULL) {
+    if(lcf->url_whitelist == NULL || lcf->url_whitelist->nelts == 0)
+    {
+        // [BUG修复] 正确逻辑：如果没有配置 URL 白名单，则认为当前 URL 不在白名单内，
+        // 返回 NGX_DECLINED 继续后续检查。
         return NGX_DECLINED;
     }
-
-    whitelist_urls = lcf->url_whitelist->elts;
+    waf_rule_t *rules = lcf->url_whitelist->elts;
+    ngx_uint_t i;
     for (i = 0; i < lcf->url_whitelist->nelts; i++) {
-        // 使用 ngx_strncmp 进行前缀匹配，例如白名单是 "/api/"，
-        // 那么 "/api/user" 和 "/api/post" 都会匹配成功。
-        if (r->uri.len >= whitelist_urls[i].len &&
-            ngx_strncmp(r->uri.data, whitelist_urls[i].data, whitelist_urls[i].len) == 0) {
-            return NGX_OK; // 匹配成功
+        waf_rule_t *current_rule = &rules[i];
+        if(ngx_regex_exec(current_rule->op_regex, &r->uri, NULL, 0) > 0)
+        {
+            // [BUG修复] 正确逻辑：URL 匹配白名单，应返回 NGX_OK 直接放行。
+            return NGX_OK;
         }
     }
-
-    return NGX_DECLINED; // 遍历完毕，未匹配
+    return NGX_DECLINED;
 } 

@@ -26,7 +26,7 @@
  */
 
 // --- 本地函数前置声明 ---
-static ngx_int_t waf_exec_operator(waf_rule_t *rule, const ngx_str_t *input);
+static ngx_int_t waf_exec_operator(ngx_log_t *log, waf_rule_t *rule, const ngx_str_t *input);
 
 /**
  * @brief [核心] 执行当前 location 的所有 WAF 规则。
@@ -60,32 +60,45 @@ waf_rule_t *waf_exec_rules(ngx_http_request_t *r) {
         var_to_check.type = current_rule->variable_type;
         var_to_check.arg = current_rule->variable_arg;
         ngx_int_t rc = waf_get_var(r, &var_to_check);
+
+        ngx_log_error(NGX_LOG_WARN, r->connection->log, 0, 
+            "[WAF] Rule %d: Got variable '%.*s', value '%.*s'", 
+            current_rule->id, (int)current_rule->variable_arg.len, current_rule->variable_arg.data, 
+            (int)var_to_check.value.len, var_to_check.value.data);
+
         if (rc == NGX_DECLINED || rc == NGX_ERROR) {
-            continue; // 获取失败，跳过此规则
+            ngx_log_error(NGX_LOG_WARN, r->connection->log, 0, "[WAF] Rule %d: Failed to get variable, skipping.", current_rule->id);
+            continue; 
         }
         if (rc == NGX_AGAIN) {
-            return NGX_AGAIN; // 需要等待，向上返回
+            return (waf_rule_t *)NGX_AGAIN;
         }
         
         // --- 步骤 2: 执行转换 ---
-        // 对获取到的 var_to_check.value 进行转换，结果存入 transformed_value
         if (waf_exec_transformations(r->pool, &var_to_check.value, 
                                      current_rule->transform_type, &transformed_value) != NGX_OK) {
-            continue; // 转换失败
+            ngx_log_error(NGX_LOG_WARN, r->connection->log, 0, "[WAF] Rule %d: Failed to execute transformations, skipping.", current_rule->id);
+            continue;
         }
+
+        ngx_log_error(NGX_LOG_WARN, r->connection->log, 0, 
+            "[WAF] Rule %d: After transformation, value is '%.*s'", 
+            current_rule->id, (int)transformed_value.len, transformed_value.data);
         
         // --- 步骤 3: 执行操作符匹配 ---
-        if (waf_exec_operator(current_rule, &transformed_value) == NGX_OK) {
-            return current_rule; // 匹配成功！立即返回
+        if (waf_exec_operator(r->connection->log, current_rule, &transformed_value) == NGX_OK) {
+            ngx_log_error(NGX_LOG_WARN, r->connection->log, 0, "[WAF] Rule %d: Matched! Operator returned NGX_OK.", current_rule->id);
+            return current_rule;
         }
     }
 
-    return NULL; // 所有规则检查完毕，无一匹配
+    return NULL;
 }
 
 /**
  * @brief 执行单个操作符的匹配逻辑。
  *
+ * @param log  Nginx 日志对象。
  * @param rule  当前正在执行的规则。
  * @param input 经过转换函数处理后的、待检测的输入字符串。
  *
@@ -96,36 +109,35 @@ waf_rule_t *waf_exec_rules(ngx_http_request_t *r) {
  *         对输入字符串进行匹配。
  *       - 对于 `@streq`，它执行简单的字符串完全相等比较。
  */
-static ngx_int_t waf_exec_operator(waf_rule_t *rule, const ngx_str_t *input) {
-    // 检查输入字符串是否有效
+static ngx_int_t waf_exec_operator(ngx_log_t *log, waf_rule_t *rule, const ngx_str_t *input) {
     if (input == NULL || input->data == NULL) {
+        ngx_log_error(NGX_LOG_WARN, log, 0, "[WAF] Operator for rule %d: Input data is NULL, declining.", rule->id);
         return NGX_DECLINED;
     }
 
     switch (rule->op_type) {
         case OP_RX: {
-            // 检查预编译的正则表达式是否存在
             if (rule->op_regex == NULL) {
-                return NGX_DECLINED; // 没有正则，无法匹配
+                ngx_log_error(NGX_LOG_WARN, log, 0, "[WAF] Operator for rule %d: Regex is NULL, declining.", rule->id);
+                return NGX_DECLINED;
             }
-            // 使用 ngx_regex_exec 执行匹配。
-            // 成功匹配时返回 > 0，未匹配返回 NGX_REGEX_NO_MATCHED，错误返回 < 0。
             ngx_int_t rc = ngx_regex_exec(rule->op_regex, (ngx_str_t *)input, NULL, 0);
             if (rc > 0) {
-                return NGX_OK; // 正则匹配成功
+                 ngx_log_error(NGX_LOG_WARN, log, 0, "[WAF] Operator for rule %d: RX match success.", rule->id);
+                return NGX_OK;
             }
             return NGX_DECLINED;
         }
 
         case OP_STREQ: {
-            // 检查操作符参数是否有效
             if (rule->op_param.data == NULL) {
+                ngx_log_error(NGX_LOG_WARN, log, 0, "[WAF] Operator for rule %d: STREQ param is NULL, declining.", rule->id);
                 return NGX_DECLINED;
             }
-            // 执行大小写敏感的字符串精确匹配
             if (input->len == rule->op_param.len &&
                 ngx_strncmp(input->data, rule->op_param.data, input->len) == 0) {
-                return NGX_OK; // 字符串完全相等
+                ngx_log_error(NGX_LOG_WARN, log, 0, "[WAF] Operator for rule %d: STREQ match success.", rule->id);
+                return NGX_OK;
             }
             return NGX_DECLINED;
         }
@@ -135,11 +147,11 @@ static ngx_int_t waf_exec_operator(waf_rule_t *rule, const ngx_str_t *input) {
         // case OP_PM: { ... }
 
         default:
-            // 不支持或未知的操作符
+            ngx_log_error(NGX_LOG_WARN, log, 0, "[WAF] Operator for rule %d: Unknown operator type %d, declining.", rule->id, rule->op_type);
             return NGX_DECLINED;
     }
     
-    return NGX_DECLINED; // 默认不匹配
+    return NGX_DECLINED;
 }
 
 // 规则加载、编译等可在配置解析时实现，这里略。 

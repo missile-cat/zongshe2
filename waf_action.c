@@ -43,9 +43,15 @@ ngx_int_t waf_exec_actions(ngx_http_request_t *r, waf_rule_t *matched_rule) {
         return NGX_DECLINED;
     }
 
+    ngx_log_error(NGX_LOG_WARN, r->connection->log, 0, 
+        "[WAF] Executing actions for matched rule id: %d", matched_rule->id);
+
     // 步骤1: 无论什么动作，首先记录日志。
     // 日志模块会根据配置判断是否真的需要写入。
-    waf_log_rule_match(r, matched_rule);
+    if (matched_rule->action_type & ACTION_LOG) {
+        ngx_log_error(NGX_LOG_WARN, r->connection->log, 0, "[WAF] Action: LOG");
+        waf_log_attack(r, matched_rule);
+    }
     
     // 步骤2: 根据动作类型(action_type)的位掩码，执行相应的操作。
     // 这种设计允许一个规则包含多个动作。
@@ -53,28 +59,33 @@ ngx_int_t waf_exec_actions(ngx_http_request_t *r, waf_rule_t *matched_rule) {
     // "deny" 动作: 立即中断请求，返回 403 Forbidden。
     // 这是最高优先级的拦截动作。
     if (matched_rule->action_type & ACTION_DENY) {
+        ngx_log_error(NGX_LOG_WARN, r->connection->log, 0, "[WAF] Action: DENY. Returning 403.");
         return NGX_HTTP_FORBIDDEN;
     }
 
     // "redirect" 动作: 将客户端重定向到指定的 URL。
     if (matched_rule->action_type & ACTION_REDIRECT) {
+        ngx_log_error(NGX_LOG_WARN, r->connection->log, 0, "[WAF] Action: REDIRECT.");
         return waf_action_redirect(r, matched_rule);
     }
 
     // "score" 动作: 为当前客户端 IP 增加分数。
     if (matched_rule->action_type & ACTION_SCORE) {
+        ngx_log_error(NGX_LOG_WARN, r->connection->log, 0, "[WAF] Action: SCORE. Adding %d.", matched_rule->action_score);
         waf_blacklist_add_score(r, matched_rule->action_score);
     }
     
     // "ratelimit" 动作: 返回 429 Too Many Requests。
     // 通常用于表示速率限制，但这里作为一种独立的拦截方式。
     if (matched_rule->action_type & ACTION_RATELIMIT) {
+        ngx_log_error(NGX_LOG_WARN, r->connection->log, 0, "[WAF] Action: RATELIMIT. Returning 429.");
         return NGX_HTTP_TOO_MANY_REQUESTS;
     }
 
     // 对于 "log", "pass", "score" 等不立即中断请求的动作，
     // 在完成日志记录和/或计分后，返回 NGX_DECLINED，
     // 允许 Nginx 继续处理该请求。
+    ngx_log_error(NGX_LOG_WARN, r->connection->log, 0, "[WAF] Action: PASS/SCORE/LOG. Declining to next module.");
     return NGX_DECLINED;
 }
 
