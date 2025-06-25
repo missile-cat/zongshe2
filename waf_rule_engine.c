@@ -44,11 +44,14 @@ waf_rule_t *waf_exec_rules(ngx_http_request_t *r) {
     waf_loc_conf_t *lcf;
     waf_rule_t *rules;
     ngx_uint_t i;
-
+    
     lcf = ngx_http_get_module_loc_conf(r, ngx_http_waf_module);
     if (lcf == NULL || lcf->rules == NULL) {
+        ngx_log_error(NGX_LOG_WARN, r->connection->log, 0, "[WAF-DEBUG] Rule engine exiting: No location config or rules array found.");
         return NULL; // 没有配置或没有规则
     }
+
+    ngx_log_error(NGX_LOG_WARN, r->connection->log, 0, "[WAF-DEBUG] Rule engine entered with %ud rule(s).", lcf->rules->nelts);
 
     rules = lcf->rules->elts;
     for (i = 0; i < lcf->rules->nelts; i++) {
@@ -56,20 +59,22 @@ waf_rule_t *waf_exec_rules(ngx_http_request_t *r) {
         waf_variable_t var_to_check;
         ngx_str_t transformed_value;
         
+        ngx_log_error(NGX_LOG_WARN, r->connection->log, 0, "[WAF-DEBUG] >> Checking Rule ID: %s", current_rule->id ? (char*)current_rule->id : "N/A");
+
         // --- 步骤 1: 获取变量数据 ---
         var_to_check.type = current_rule->variable_type;
         var_to_check.arg = current_rule->variable_arg;
         ngx_int_t rc = waf_get_var(r, &var_to_check);
 
-        ngx_log_error(NGX_LOG_WARN, r->connection->log, 0, 
-            "[WAF] Rule %d: Got variable '%.*s', value '%.*s'", 
-            current_rule->id, (int)current_rule->variable_arg.len, current_rule->variable_arg.data, 
-            (int)var_to_check.value.len, var_to_check.value.data);
-
         if (rc == NGX_DECLINED || rc == NGX_ERROR) {
-            ngx_log_error(NGX_LOG_WARN, r->connection->log, 0, "[WAF] Rule %d: Failed to get variable, skipping.", current_rule->id);
+            ngx_log_error(NGX_LOG_WARN, r->connection->log, 0, "[WAF-DEBUG]     - Result: Failed to get variable, skipping rule.");
             continue; 
         }
+
+        ngx_log_error(NGX_LOG_WARN, r->connection->log, 0, 
+            "[WAF-DEBUG]   - Step 1: waf_get_var() returned value '%.*s'", 
+            (int)var_to_check.value.len, var_to_check.value.data);
+
         if (rc == NGX_AGAIN) {
             return (waf_rule_t *)NGX_AGAIN;
         }
@@ -77,18 +82,53 @@ waf_rule_t *waf_exec_rules(ngx_http_request_t *r) {
         // --- 步骤 2: 执行转换 ---
         if (waf_exec_transformations(r->pool, &var_to_check.value, 
                                      current_rule->transform_type, &transformed_value) != NGX_OK) {
-            ngx_log_error(NGX_LOG_WARN, r->connection->log, 0, "[WAF] Rule %d: Failed to execute transformations, skipping.", current_rule->id);
+            ngx_log_error(NGX_LOG_WARN, r->connection->log, 0, "[WAF-DEBUG]   - Step 2: Failed to execute transformations, skipping.");
             continue;
         }
 
         ngx_log_error(NGX_LOG_WARN, r->connection->log, 0, 
-            "[WAF] Rule %d: After transformation, value is '%.*s'", 
-            current_rule->id, (int)transformed_value.len, transformed_value.data);
+            "[WAF-DEBUG]   - Step 2: After transformation, value is '%.*s'", 
+            (int)transformed_value.len, transformed_value.data);
+
+            // --- 步骤 3: 执行操作符匹配 ---
+        ngx_log_error(NGX_LOG_WARN, r->connection->log, 0, "[WAF-DEBUG]   - Step 3: Executing operator with param '%.*s'", 
+            (int)current_rule->op_param.len, current_rule->op_param.data
+        );
         
-        // --- 步骤 3: 执行操作符匹配 ---
-        if (waf_exec_operator(r->connection->log, current_rule, &transformed_value) == NGX_OK) {
-            ngx_log_error(NGX_LOG_WARN, r->connection->log, 0, "[WAF] Rule %d: Matched! Operator returned NGX_OK.", current_rule->id);
-            return current_rule;
+        // [BUGFIX] ARGS 是一个集合，需要迭代检查
+        if (current_rule->variable_type == VAR_ARGS && current_rule->variable_arg.len == 0) {
+            u_char *args_data = transformed_value.data;
+            u_char *args_end = args_data + transformed_value.len;
+            u_char *current_pos = args_data;
+
+            while (current_pos < args_end) {
+                u_char *delimiter = (u_char*)ngx_strlchr(current_pos, args_end, '&');
+                ngx_str_t single_arg;
+                
+                if (delimiter == NULL) { // 最后一个参数
+                    single_arg.data = current_pos;
+                    single_arg.len = args_end - current_pos;
+                    current_pos = args_end;
+                } else {
+                    single_arg.data = current_pos;
+                    single_arg.len = delimiter - current_pos;
+                    current_pos = delimiter + 1;
+                }
+
+                if (waf_exec_operator(r->connection->log, current_rule, &single_arg) == NGX_OK) {
+                    ngx_log_error(NGX_LOG_WARN, r->connection->log, 0, "[WAF-DEBUG]     - Result: MATCHED! Rule triggered on arg '%.*s'.", (int)single_arg.len, single_arg.data);
+                    return current_rule; // 匹配成功，立刻返回
+                }
+            }
+            // 如果循环结束都没有匹配，则继续下一条规则
+            ngx_log_error(NGX_LOG_WARN, r->connection->log, 0, "[WAF-DEBUG]     - Result: No args matched for this rule.");
+
+        } else {
+            // 对于非 ARGS 集合的变量，或指定了参数的 ARGS (如 ARGS:id)，执行原始逻辑
+            if (waf_exec_operator(r->connection->log, current_rule, &transformed_value) == NGX_OK) {
+                ngx_log_error(NGX_LOG_WARN, r->connection->log, 0, "[WAF-DEBUG]     - Result: MATCHED! Rule triggered.");
+                return current_rule; 
+            }
         }
     }
 
@@ -134,14 +174,25 @@ static ngx_int_t waf_exec_operator(ngx_log_t *log, waf_rule_t *rule, const ngx_s
                 ngx_log_error(NGX_LOG_WARN, log, 0, "[WAF] Operator for rule %d: STREQ param is NULL, declining.", rule->id);
                 return NGX_DECLINED;
             }
-            if (input->len == rule->op_param.len &&
-                ngx_strncmp(input->data, rule->op_param.data, input->len) == 0) {
+
+            // [BUGFIX] 当应用于 ARGS 时，只比较 '=' 后面的 value 部分
+            ngx_str_t value_to_check = *input;
+            if (rule->variable_type == VAR_ARGS) {
+                u_char *eq_pos = (u_char*)ngx_strlchr(input->data, input->data + input->len, '=');
+                if (eq_pos != NULL) {
+                    value_to_check.data = eq_pos + 1;
+                    value_to_check.len = (input->data + input->len) - (eq_pos + 1);
+                }
+            }
+
+            if (value_to_check.len == rule->op_param.len &&
+                ngx_strncmp(value_to_check.data, rule->op_param.data, value_to_check.len) == 0) {
                 ngx_log_error(NGX_LOG_WARN, log, 0, "[WAF] Operator for rule %d: STREQ match success.", rule->id);
                 return NGX_OK;
             }
             return NGX_DECLINED;
-        }
-
+    }
+    
         // 扩展点: 在此添加对其他操作符的支持
         // case OP_CONTAINS: { ... }
         // case OP_PM: { ... }

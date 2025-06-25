@@ -17,4 +17,7 @@ char *waf_set_whitelist(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
  */
 ngx_int_t waf_check_whitelist(ngx_http_request_t *r);
 
+char *waf_set_blacklist(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
+ngx_int_t waf_check_blacklist(ngx_http_request_t *r);
+
 #endif /* WAF_WHITELIST_H */ 

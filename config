@@ -39,15 +39,15 @@ if test -n "$ngx_module_link"; then
     . auto/module
 else
     # 静态编译的逻辑
-    HTTP_MODULES="$HTTP_MODULES ngx_http_waf_module"
-    NGX_ADDON_SRCS="$NGX_ADDON_SRCS $ngx_addon_dir/ngx_http_waf_module.c"
+HTTP_MODULES="$HTTP_MODULES ngx_http_waf_module"
+NGX_ADDON_SRCS="$NGX_ADDON_SRCS $ngx_addon_dir/ngx_http_waf_module.c"
     NGX_ADDON_SRCS="$NGX_ADDON_SRCS $ngx_addon_dir/waf_action.c"
     NGX_ADDON_SRCS="$NGX_ADDON_SRCS $ngx_addon_dir/waf_blacklist.c"
     NGX_ADDON_SRCS="$NGX_ADDON_SRCS $ngx_addon_dir/waf_log.c"
-    NGX_ADDON_SRCS="$NGX_ADDON_SRCS $ngx_addon_dir/waf_parser.c"
-    NGX_ADDON_SRCS="$NGX_ADDON_SRCS $ngx_addon_dir/waf_request.c"
+NGX_ADDON_SRCS="$NGX_ADDON_SRCS $ngx_addon_dir/waf_parser.c"
+NGX_ADDON_SRCS="$NGX_ADDON_SRCS $ngx_addon_dir/waf_request.c"
     NGX_ADDON_SRCS="$NGX_ADDON_SRCS $ngx_addon_dir/waf_rule_engine.c"
-    NGX_ADDON_SRCS="$NGX_ADDON_SRCS $ngx_addon_dir/waf_transform.c"
+NGX_ADDON_SRCS="$NGX_ADDON_SRCS $ngx_addon_dir/waf_transform.c"
     NGX_ADDON_SRCS="$NGX_ADDON_SRCS $ngx_addon_dir/waf_url_whitelist.c"
     NGX_ADDON_SRCS="$NGX_ADDON_SRCS $ngx_addon_dir/waf_whitelist.c"
 

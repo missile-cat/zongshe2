@@ -122,9 +122,10 @@ typedef struct {
     ngx_str_t variable_arg;             // 变量的参数 (例如，请求头的名称)
 
     // 操作符部分
-    waf_operator_type_t op_type;        // 操作符类型 (OP_*)
-    ngx_str_t op_param;                 // 操作符的参数 (例如，正则表达式字符串)
-    ngx_regex_t *op_regex;              // 预编译的正则表达式对象
+    ngx_uint_t op_type;         // 操作符类型 (OP_RX, OP_STREQ, ...)
+    ngx_str_t op_param;         // 操作符参数 (如 "@streq" 中的字符串)
+    pcre_jit_stack *op_jit_stack; // PCRE JIT 堆栈 (用于性能优化)
+    ngx_regex_t *op_regex;      // 编译后的 PCRE 正则表达式
 
     // 动作部分
     u_char* action_str;                 // 原始的 action 字符串
@@ -132,6 +133,7 @@ typedef struct {
     ngx_int_t action_score;             // "score" 动作的分值
     ngx_str_t action_redirect_url;      // "redirect" 动作的 URL
     
+    ngx_array_t *actions;       // 动作数组 (waf_action_t)
 } waf_rule_t;
 
 
@@ -154,9 +156,19 @@ typedef struct {
     ngx_flag_t enable;          // WAF 总开关 (waf on/off)
     ngx_flag_t log_enable;      // WAF 日志开关 (waf_log on/off)
     ngx_array_t *rules;         // [核心] 存储该 location 所有 SecRule 规则的数组
-    ngx_array_t *whitelist;     // IP白名单 (ngx_cidr_t)
-    ngx_array_t *url_whitelist; // [新增] URL白名单 (ngx_str_t)
+    ngx_array_t *whitelist;     // IP白名单 (ngx_str_t)
+    ngx_array_t *blacklist;     // IP黑名单 (ngx_str_t)
+    ngx_array_t *url_whitelist; // URL白名单 (ngx_str_t)
 } waf_loc_conf_t;
+
+
+/**
+ * @brief [新增] WAF 请求上下文
+ * @details 用于存储单个请求的处理状态，每个请求都有自己独立的实例。
+ */
+typedef struct {
+    ngx_flag_t has_read_body;   // 用于防止 body 读取死循环的标志
+} waf_ctx_t;
 
 
 /**

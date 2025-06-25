@@ -52,7 +52,7 @@ sudo rm -rf objs
 echo "--> 正在配置 Nginx (与线上版本保持一致)..."
 # [核心修改] 使用您线上 Nginx 的编译参数，以确保二进制兼容
 # 同时保留脚本动态获取模块路径的能力
-./configure --prefix=/usr/local/nginx --add-dynamic-module="$MODULE_DIR"
+./configure --prefix=/usr/local/nginx --add-dynamic-module="$MODULE_DIR" --with-pcre --with-pcre-jit
 
 echo "--> 正在编译模块 (使用 'make' 保证完整编译)..."
 # [BUG修复] 'make modules' 在某些情况下不会生成 .so 文件，切换回 'make'

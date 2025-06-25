@@ -118,6 +118,12 @@ static ngx_command_t ngx_http_waf_commands[] = {
       NGX_HTTP_LOC_CONF_OFFSET,
       0,
       NULL },
+    { ngx_string("waf_blacklist"),
+      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_TAKE1,
+      waf_set_blacklist,
+      NGX_HTTP_LOC_CONF_OFFSET,
+      0,
+      NULL },
     ngx_null_command // 数组结束标志
 };
 
@@ -165,51 +171,68 @@ ngx_module_t ngx_http_waf_module = {
 static ngx_int_t ngx_http_waf_handler(ngx_http_request_t *r) {
     waf_loc_conf_t *lcf;
     waf_rule_t *matched_rule;
+    waf_ctx_t *ctx;
 
-    ngx_log_error(NGX_LOG_WARN, r->connection->log, 0, "[WAF] === WAF Handler Started ===");
+    // [核心修复] 为每个请求创建并设置独立的上下文
+    ctx = ngx_http_get_module_ctx(r, ngx_http_waf_module);
+    if (ctx == NULL) {
+        ctx = ngx_pcalloc(r->pool, sizeof(waf_ctx_t));
+        if (ctx == NULL) {
+            return NGX_HTTP_INTERNAL_SERVER_ERROR;
+        }
+        ngx_http_set_ctx(r, ctx, ngx_http_waf_module);
+    }
 
-    // --- 0. 黑名单检查 ---
-    ngx_log_error(NGX_LOG_WARN, r->connection->log, 0, "[WAF] Step 1: Checking IP Blacklist.");
-    if (waf_blacklist_check_ip(r) == NGX_OK) {
-        ngx_log_error(NGX_LOG_WARN, r->connection->log, 0, "[WAF] Result: IP Blacklisted. Denying access.");
+    ngx_log_error(NGX_LOG_WARN, r->connection->log, 0, "[WAF-DEBUG] >> WAF Handler Started.");
+
+    // --- 1. 白名单检查 (最高优先级) ---
+    ngx_log_error(NGX_LOG_WARN, r->connection->log, 0, "[WAF-DEBUG]   - Step 1: Checking IP Whitelist.");
+    if (waf_check_whitelist(r) == NGX_OK) {
+        ngx_log_error(NGX_LOG_WARN, r->connection->log, 0, "[WAF-DEBUG]     - Result: IP Whitelisted. Access granted.");
+        return NGX_DECLINED;
+    }
+
+    // --- 2. 静态黑名单检查 ---
+    ngx_log_error(NGX_LOG_WARN, r->connection->log, 0, "[WAF-DEBUG]   - Step 2: Checking Static IP Blacklist.");
+    if (waf_check_blacklist(r) == NGX_OK) {
+        ngx_log_error(NGX_LOG_WARN, r->connection->log, 0, "[WAF-DEBUG]     - Result: IP in Static Blacklist. Denying access.");
         return NGX_HTTP_FORBIDDEN;
     }
-    ngx_log_error(NGX_LOG_WARN, r->connection->log, 0, "[WAF] Pass: IP not in Blacklist.");
 
+    // --- 3. 动态(计分)黑名单检查 ---
+    ngx_log_error(NGX_LOG_WARN, r->connection->log, 0, "[WAF-DEBUG]   - Step 3: Checking Dynamic (Scoring) IP Blacklist.");
+    if (waf_blacklist_check_ip(r) == NGX_OK) {
+        ngx_log_error(NGX_LOG_WARN, r->connection->log, 0, "[WAF-DEBUG]     - Result: IP in Dynamic Blacklist. Denying access.");
+        return NGX_HTTP_FORBIDDEN;
+    }
+    
     // 获取当前 location 的配置
     lcf = ngx_http_get_module_loc_conf(r, ngx_http_waf_module);
     
-    // --- 1. WAF 总开关检查 & 白名单检查 ---
-    ngx_log_error(NGX_LOG_WARN, r->connection->log, 0, "[WAF] Step 2: Checking if WAF is enabled (lcf->enable: %d).", lcf->enable);
+    // --- 4. WAF 总开关检查 ---
+    ngx_log_error(NGX_LOG_WARN, r->connection->log, 0, "[WAF-DEBUG]   - Step 4: Checking if WAF is enabled (waf: %d)", lcf->enable);
     if (lcf->enable == 0) {
-        ngx_log_error(NGX_LOG_WARN, r->connection->log, 0, "[WAF] Result: WAF is disabled. Skipping.");
+        ngx_log_error(NGX_LOG_WARN, r->connection->log, 0, "[WAF-DEBUG]     - Result: WAF is disabled. Skipping all checks.");
         return NGX_DECLINED;
     }
-
-    ngx_log_error(NGX_LOG_WARN, r->connection->log, 0, "[WAF] Step 3: Checking IP Whitelist.");
-    if (waf_check_whitelist(r) == NGX_OK) {
-        ngx_log_error(NGX_LOG_WARN, r->connection->log, 0, "[WAF] Result: IP Whitelisted. Access granted.");
-        return NGX_DECLINED;
-    }
-    ngx_log_error(NGX_LOG_WARN, r->connection->log, 0, "[WAF] Pass: IP not in Whitelist.");
-
-    ngx_log_error(NGX_LOG_WARN, r->connection->log, 0, "[WAF] Step 4: Checking URL Whitelist.");
+    
+    // --- 5. URL 白名单检查 ---
+    ngx_log_error(NGX_LOG_WARN, r->connection->log, 0, "[WAF-DEBUG]   - Step 5: Checking URL Whitelist.");
     if (waf_check_url_whitelist(r) == NGX_OK) {
-        ngx_log_error(NGX_LOG_WARN, r->connection->log, 0, "[WAF] Result: URL Whitelisted. Access granted.");
+        ngx_log_error(NGX_LOG_WARN, r->connection->log, 0, "[WAF-DEBUG]     - Result: URL Whitelisted. Access granted.");
         return NGX_DECLINED;
     }
-    ngx_log_error(NGX_LOG_WARN, r->connection->log, 0, "[WAF] Pass: URL not in Whitelist.");
 
-    // --- 2. 规则引擎处理 ---
-    ngx_log_error(NGX_LOG_WARN, r->connection->log, 0, "[WAF] Step 5: Executing Rule Engine.");
+    // --- 6. 规则引擎处理 ---
+    ngx_log_error(NGX_LOG_WARN, r->connection->log, 0, "[WAF-DEBUG]   - Step 6: Entering Rule Engine...");
     matched_rule = waf_exec_rules(r);
     if (matched_rule == NULL) {
-        ngx_log_error(NGX_LOG_WARN, r->connection->log, 0, "[WAF] Result: No rules matched. Access granted.");
-        return NGX_DECLINED;
+        ngx_log_error(NGX_LOG_WARN, r->connection->log, 0, "[WAF-DEBUG]     - Result: No rules matched. Access granted.");
+    return NGX_DECLINED;
     }
 
-    // --- 3. 执行动作 ---
-    ngx_log_error(NGX_LOG_WARN, r->connection->log, 0, "[WAF] Step 6: Rule matched (id: %d). Executing action.", matched_rule->id);
+    // --- 7. 执行动作 ---
+    ngx_log_error(NGX_LOG_WARN, r->connection->log, 0, "[WAF-DEBUG]   - Step 7: Rule matched (id: %s). Executing action.", matched_rule->id ? (char*)matched_rule->id : "N/A");
     return waf_exec_actions(r, matched_rule);
 }
 
@@ -223,7 +246,11 @@ static char *ngx_http_waf_set_rule(ngx_conf_t *cf, ngx_command_t *cmd, void *con
     waf_rule_t *new_rule;
     ngx_str_t *value;
 
-    // [修改] 规则可以有3个或4个参数
+    ngx_log_error(NGX_LOG_EMERG, cf->log, 0, "[WAF-DEBUG] >>> PARSING SecRule DIRECTIVE <<<");
+
+    // [修复] 规则可以有3个或4个参数
+    // SecRule VARS REGEX ACTIONS [TRANSFORMATION]
+    // 对应 cf->args->nelts 分别为 4 或 5
     if (cf->args->nelts != 4 && cf->args->nelts != 5) {
         ngx_conf_log_error(NGX_LOG_EMERG, cf, 0, 
             "invalid number of arguments in SecRule directive (expected 3 or 4)");
@@ -255,7 +282,7 @@ static char *ngx_http_waf_set_rule(ngx_conf_t *cf, ngx_command_t *cmd, void *con
         // 不带转换函数的3段式: SecRule "V" "O" "A"
         if (waf_parse_rule(cf, new_rule, NULL, &value[1], &value[2], &value[3]) != NGX_OK) {
             ngx_conf_log_error(NGX_LOG_EMERG, cf, 0, "invalid SecRule (without transformations)");
-            return NGX_CONF_ERROR;
+        return NGX_CONF_ERROR;
         }
     }
 
@@ -296,20 +323,15 @@ static char *ngx_http_waf_merge_loc_conf(ngx_conf_t *cf, void *parent, void *chi
     waf_loc_conf_t *prev = parent;
     waf_loc_conf_t *conf = child;
 
-    // 如果子配置未设置，则使用父配置的值。
+    // 合并 on/off 开关
     ngx_conf_merge_value(conf->enable, prev->enable, 0);
     ngx_conf_merge_value(conf->log_enable, prev->log_enable, 0);
 
-    // 规则数组不直接合并，每个 location 维护自己的规则集。
-    // 更高级的实现可以考虑合并规则。
+    // [核心] 合并规则数组
+    // 如果子 location 没有定义自己的规则 (conf->rules == NULL)，
+    // 那么它应该直接继承父 location 的规则。
     if (conf->rules == NULL) {
         conf->rules = prev->rules;
-    }
-    if (conf->whitelist == NULL) {
-        conf->whitelist = prev->whitelist;
-    }
-    if (conf->url_whitelist == NULL) {
-        conf->url_whitelist = prev->url_whitelist;
     }
 
     return NGX_CONF_OK;
@@ -322,23 +344,26 @@ static char *ngx_http_waf_merge_loc_conf(ngx_conf_t *cf, void *parent, void *chi
  * 的请求处理流程 (REWRITE 阶段)。这是模块能够工作的关键。
  */
 static ngx_int_t ngx_http_waf_init(ngx_conf_t *cf) {
-    ngx_http_handler_pt        *h;
-    ngx_http_core_main_conf_t  *cmcf;
+    ngx_http_handler_pt *h;
+    ngx_http_core_main_conf_t *cmcf;
 
-    ngx_log_error(NGX_LOG_WARN, cf->log, 0, "[WAF INIT] Post-configuration hook started.");
+    // [WAF-DEBUG] 添加最高级别的日志，用于验证此初始化函数是否被调用。
+    ngx_log_error(NGX_LOG_EMERG, cf->log, 0, "[WAF-DEBUG] !!! WAF Module Init Function Called !!!");
 
     cmcf = ngx_http_conf_get_module_main_conf(cf, ngx_http_core_module);
 
-    h = ngx_array_push(&cmcf->phases[NGX_HTTP_REWRITE_PHASE].handlers);
+    // [最终修复] 将 handler 挂接到 NGX_HTTP_ACCESS_PHASE。
+    // 之前的 REWRITE phase 由于某些原因未被触发，ACCESS phase 是专门用于访问控制的，更适合WAF。
+    h = ngx_array_push(&cmcf->phases[NGX_HTTP_ACCESS_PHASE].handlers);
     if (h == NULL) {
         return NGX_ERROR;
     }
 
     *h = ngx_http_waf_handler;
-    ngx_log_error(NGX_LOG_WARN, cf->log, 0, "[WAF INIT] Success: WAF handler installed in REWRITE phase.");
+    ngx_log_error(NGX_LOG_WARN, cf->log, 0, "[WAF INIT] Success: WAF handler installed in ACCESS phase.");
 
     return NGX_OK;
-}
+} 
 
 /**
  * @brief [新增] 创建 main 级别的配置结构体。

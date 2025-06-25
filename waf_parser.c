@@ -70,11 +70,11 @@ ngx_int_t waf_parse_rule(ngx_conf_t *cf, waf_rule_t *rule, ngx_str_t *trans_str,
  */
 static ngx_int_t waf_parse_transformation(ngx_conf_t *cf, waf_rule_t *rule, ngx_str_t *trans_str) {
     if (trans_str == NULL || trans_str->data == NULL) return NGX_OK;
-
+        
     // 示例: "t:lowercase,t:urlDecode"
     if (ngx_strstr(trans_str->data, "t:lowercase")) rule->transform_type |= T_LOWERCASE;
     if (ngx_strstr(trans_str->data, "t:urlDecode")) rule->transform_type |= T_URLDECODE;
-    
+
     return NGX_OK;
 }
 
@@ -157,9 +157,9 @@ static ngx_int_t waf_parse_operator(ngx_conf_t *cf, waf_rule_t *rule, ngx_str_t 
     if (op_param.len >= 2 && op_param.data[0] == '"' && op_param.data[op_param.len - 1] == '"') {
         op_param.data++;
         op_param.len -= 2;
-    }
+        }
     rule->op_param = op_param;
-    
+
     // 解析操作符类型
     if (op_name.len == (sizeof("@rx")-1) && ngx_strncmp(op_name.data, (u_char*)"@rx", op_name.len) == 0) {
         rule->op_type = OP_RX;
@@ -180,9 +180,9 @@ static ngx_int_t waf_parse_operator(ngx_conf_t *cf, waf_rule_t *rule, ngx_str_t 
         rule->op_type = OP_STREQ;
     } else {
         ngx_conf_log_error(NGX_LOG_EMERG, cf, 0, "unknown operator: \"%V\"", &op_name);
-        return NGX_ERROR;
-    }
-
+            return NGX_ERROR;
+        }
+        
     return NGX_OK;
 }
 

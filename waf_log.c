@@ -46,7 +46,7 @@ void waf_log_attack(ngx_http_request_t *r, waf_rule_t *rule) {
     // 增加对 host header 的空指针检查，防止异常请求导致崩溃
     if (r->headers_in.host != NULL && r->headers_in.host->value.len > 0) {
         ngx_log_error(NGX_LOG_WARN, r->connection->log, 0,
-                  "[waf] Attack intercepted. client: %V, server: %V, request: \"%V\", ruleid: %s, action: %s",
+                  "[waf] Attack Detected. client_ip=%V, server_name=%V, request_url=\"%V\", rule_id=%s, action=%s",
                   &r->connection->addr_text,
                   &r->headers_in.host->value,
                   &r->request_line,
@@ -54,7 +54,7 @@ void waf_log_attack(ngx_http_request_t *r, waf_rule_t *rule) {
                   rule->action_str);
     } else {
         ngx_log_error(NGX_LOG_WARN, r->connection->log, 0,
-                  "[waf] Attack intercepted. client: %V, server: unknown, request: \"%V\", ruleid: %s, action: %s",
+                  "[waf] Attack Detected. client_ip=%V, server_name=unknown, request_url=\"%V\", rule_id=%s, action=%s",
                   &r->connection->addr_text,
                   &r->request_line,
                   rule->id,
@@ -64,4 +64,4 @@ void waf_log_attack(ngx_http_request_t *r, waf_rule_t *rule) {
 
 void waf_log(const char *level, const char *msg, ...) {
     // ... existing code ...
-}
+} 
